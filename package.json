@@ -1,0 +1,29 @@
+{
+  "name": "opti-cms-cleanup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI to inventory and purge content, types and settings from an Optimizely SaaS CMS environment",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "probe": "tsx scripts/probe.ts",
+    "typecheck": "tsc --noEmit",
+    "probe:content": "tsx scripts/probe-content.ts",
+    "cleanup": "tsx src/cli.ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "commander": "^15.1.0",
+    "dotenv": "^18.0.5",
+    "picocolors": "^1.1.1",
+    "zod": "^4.6.5"
+  }
+}

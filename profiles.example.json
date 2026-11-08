@@ -1,0 +1,7 @@
+{
+  "acme-test1": {
+    "instance": "acme",
+    "environment": "Test1",
+    "cmsUrl": "https://app-acmetest1.cms.optimizely.com"
+  }
+}
