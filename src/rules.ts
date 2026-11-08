@@ -5,6 +5,13 @@ export const ROOT_CONTAINER = '43f936c99b234ea397b261c538ad07c9';
 export const FOR_ALL_SITES = 'e56f85d0e8334e02976a2d11fe4d598c';
 export const SYSTEM_CONTAINERS = [ROOT_CONTAINER, FOR_ALL_SITES];
 
+/**
+ * Content types every new SaaS CMS instance starts with. They have no `source`, so they look custom, but people
+ * may expect them to exist; the purge asks whether to keep them. Installations often change them (e.g. add
+ * properties), so kept ones are reported with their changes.
+ */
+export const DEFAULT_CONTENT_TYPES = ['BlankExperience', 'BlankSection', 'GenericMedia', 'ImageMedia', 'VideoMedia'];
+
 /** The only locale left enabled after a purge. */
 export const DEFAULT_LOCALE = 'en';
 

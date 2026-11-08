@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import type { Profile } from '../config/profiles.js';
-import type { Outcome } from '../engine/purge.js';
+import { reasonOf, type Outcome } from '../engine/purge.js';
 import { CATEGORIES, CONTENT_GROUPS, type Action, type Inventory, type PlanItem } from '../model.js';
 
 const ACTIONS: Action[] = ['delete', 'disable', 'enable', 'skip', 'none', 'manual'];
@@ -93,10 +93,21 @@ export function printOutcomes(category: string, outcomes: Outcome[]): void {
   ].filter(Boolean);
   const icon = count('failed') ? pc.red('✗') : pc.green('✓');
   console.log(`${icon} ${printLabel(category)}: ${parts.join(', ')}`);
+
+  // Failures grouped by reason, most common first, with a few examples each; the log has the full list.
+  const byReason = new Map<string, Outcome[]>();
   for (const o of outcomes.filter((o) => o.status === 'failed')) {
-    console.log(pc.red(`    ${o.name ?? o.key}${o.name ? pc.dim(` (${o.key})`) : ''}: ${o.error}`));
+    const reason = reasonOf(o.error);
+    byReason.set(reason, [...(byReason.get(reason) ?? []), o]);
+  }
+  for (const [reason, group] of [...byReason].sort(([, a], [, b]) => b.length - a.length)) {
+    console.log(pc.red(`    ${group.length} × ${reason}`));
+    for (const o of group.slice(0, MAX_EXAMPLES)) console.log(pc.dim(`        ${o.name ?? o.key}${o.name ? ` (${o.key})` : ''}`));
+    if (group.length > MAX_EXAMPLES) console.log(pc.dim(`        ... and ${group.length - MAX_EXAMPLES} more (see log)`));
   }
 }
+
+const MAX_EXAMPLES = 3;
 
 function sortForDisplay(items: PlanItem[]): PlanItem[] {
   return [...items].sort(

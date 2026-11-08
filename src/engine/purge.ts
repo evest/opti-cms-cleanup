@@ -11,6 +11,8 @@ export interface Outcome {
   action: PlanItem['action'];
   status: Status;
   pass: number;
+  /** HTTP status of the last failure, if any. */
+  httpStatus?: number;
   error?: string;
   at: string;
 }
@@ -26,35 +28,84 @@ export interface PurgeOptions {
   concurrency?: number;
   onProgress?: (p: StepProgress) => void;
   onStepDone?: (category: Category, outcomes: Outcome[]) => void;
+  /**
+   * Scans for content again. After deleting content the CMS can expose items the first scan didn't see
+   * (e.g. orphans under containers that were not loadable), so the content step repeats until a scan comes back empty.
+   */
+  rescanContent?: () => Promise<PlanItem[]>;
+  onContentRound?: (round: number, found: number) => void;
 }
 
-/** Thrown when the API key lacks the rights to delete content; nothing more can be done until that is fixed. */
-export class AccessDeniedError extends Error {}
+export interface PurgeResult {
+  outcomes: Outcome[];
+  /** Set when the purge stopped early because a step that later steps depend on did not fully succeed. */
+  stoppedAfter?: Category;
+}
+
+/**
+ * Steps that must fully succeed before the purge continues. Deleting templates, types and tabs while
+ * content remains would fail (types in use) or leave a broken site, so the purge stops instead.
+ */
+const GATING_STEPS = new Set<Category>(['applications', 'content']);
 
 const MAX_PASSES = 5;
+/** Delete-and-rescan rounds for content, including the first. */
+const MAX_CONTENT_ROUNDS = 4;
 
 /** Executes every actionable item of an inventory, category by category, in dependency order. */
-export async function purge(client: CmsClient, items: PlanItem[], options: PurgeOptions = {}): Promise<Outcome[]> {
+export async function purge(client: CmsClient, items: PlanItem[], options: PurgeOptions = {}): Promise<PurgeResult> {
   const outcomes: Outcome[] = [];
   for (const category of CATEGORIES) {
     const actionable = items.filter((i) => i.category === category && ['delete', 'disable', 'enable'].includes(i.action));
     if (!actionable.length) continue;
     const stepOutcomes = await runStep(client, category, actionable, options);
+    if (category === 'content' && options.rescanContent) await deleteRemainingContent(client, stepOutcomes, options);
     outcomes.push(...stepOutcomes);
     options.onStepDone?.(category, stepOutcomes);
+    if (GATING_STEPS.has(category) && stepOutcomes.some((o) => o.status === 'failed')) {
+      return { outcomes, stoppedAfter: category };
+    }
   }
-  return outcomes;
+  return { outcomes };
+}
+
+/** Rescans and deletes newly found content until nothing is left; whatever survives every round is recorded as failed. */
+async function deleteRemainingContent(client: CmsClient, outcomes: Outcome[], options: PurgeOptions): Promise<void> {
+  for (let round = 2; ; round++) {
+    if (outcomes.some((o) => o.status === 'failed')) return;
+    const remaining = (await options.rescanContent!()).filter((i) => i.category === 'content' && i.action === 'delete');
+    if (!remaining.length) return;
+    if (round > MAX_CONTENT_ROUNDS) {
+      const at = new Date().toISOString();
+      for (const item of remaining) {
+        outcomes.push({ category: 'content', key: item.key, name: item.name, action: item.action, status: 'failed', pass: round - 1, error: `still present after ${MAX_CONTENT_ROUNDS} delete rounds`, at });
+      }
+      return;
+    }
+    options.onContentRound?.(round, remaining.length);
+    outcomes.push(...(await runStep(client, 'content', remaining, options)));
+  }
 }
 
 async function runStep(client: CmsClient, category: Category, items: PlanItem[], options: PurgeOptions): Promise<Outcome[]> {
   const concurrency = options.concurrency ?? 4;
   const outcomes: Outcome[] = [];
-  const record = (item: PlanItem, status: Status, pass: number, error?: string) =>
-    outcomes.push({ category, key: item.key, name: item.name, action: item.action, status, pass, error, at: new Date().toISOString() });
+  const record = (item: PlanItem, status: Status, pass: number, error?: unknown) =>
+    outcomes.push({
+      category,
+      key: item.key,
+      name: item.name,
+      action: item.action,
+      status,
+      pass,
+      httpStatus: error instanceof ApiError ? error.status : undefined,
+      error: error === undefined ? undefined : describe(error),
+      at: new Date().toISOString(),
+    });
 
   let pending = items;
   for (let pass = 1; pending.length && pass <= MAX_PASSES; pass++) {
-    const failures: { item: PlanItem; error: ApiError | Error }[] = [];
+    const failures: { item: PlanItem; error: unknown }[] = [];
     for (const batch of batches(category, pending)) {
       await mapLimit(batch, concurrency, async (item) => {
         try {
@@ -63,23 +114,16 @@ async function runStep(client: CmsClient, category: Category, items: PlanItem[],
         } catch (err) {
           // Already gone, e.g. removed together with its container.
           if (err instanceof ApiError && err.status === 404 && item.action === 'delete') record(item, 'gone', pass);
-          else failures.push({ item, error: err as Error });
+          else failures.push({ item, error: err });
         }
         options.onProgress?.({ category, done: outcomes.length, total: items.length, pass });
       });
     }
 
-    if (category === 'content' && pass === 1 && failures.length === pending.length && failures.every((f) => isForbidden(f.error))) {
-      for (const f of failures) record(f.item, 'failed', pass, describe(f.error));
-      throw new AccessDeniedError(
-        'The API key is not allowed to delete content (403). In the CMS: Settings > Access Rights > root, give the API key ' +
-          'Administer and tick "Apply settings for all subitems", then run again.',
-      );
-    }
-
-    const noProgress = failures.length === pending.length;
+    // Access denied won't change between passes, and neither does anything else if nothing moved.
+    const noProgress = failures.length === pending.length || failures.every((f) => isForbidden(f.error));
     if (noProgress || pass === MAX_PASSES) {
-      for (const f of failures) record(f.item, 'failed', pass, describe(f.error));
+      for (const f of failures) record(f.item, 'failed', pass, f.error);
       break;
     }
     pending = failures.map((f) => f.item);
@@ -132,10 +176,15 @@ function apply(client: CmsClient, item: PlanItem): Promise<unknown> {
   }
 }
 
-const isForbidden = (err: unknown) => err instanceof ApiError && err.status === 403;
+export const isForbidden = (err: unknown) => err instanceof ApiError && err.status === 403;
 
 function describe(err: unknown): string {
   if (!(err instanceof ApiError)) return String(err instanceof Error ? err.message : err);
   const body = err.body as { title?: string; detail?: string; code?: string } | undefined;
   return [err.status, err.code, body?.detail ?? body?.title].filter(Boolean).join(' ');
+}
+
+/** Turns an error message into a groupable reason by removing item-specific keys. */
+export function reasonOf(error: string | undefined): string {
+  return (error ?? 'unknown error').replace(/'[^']*'/g, "'…'").replace(/\b[0-9a-f]{32}\b/g, '…');
 }

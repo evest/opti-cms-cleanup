@@ -1,5 +1,9 @@
-/** Resource categories, in the order the purge engine processes them. */
+/**
+ * Resource categories, in the order the purge engine processes them.
+ * Applications go first: content that is an application's entry point cannot be deleted while the application exists.
+ */
 export const CATEGORIES = [
+  'applications',
   'content',
   'blueprints',
   'displaytemplates',
@@ -7,7 +11,6 @@ export const CATEGORIES = [
   'contentsources',
   'contenttypes',
   'propertygroups',
-  'applications',
   'locales',
   'manual',
 ] as const;
@@ -34,6 +37,14 @@ export interface PlanItem {
   name?: string;
   action: Action;
   reason?: string;
+  /** Content types only. */
+  type?: {
+    /** One of the types a new instance starts with (see DEFAULT_CONTENT_TYPES). */
+    isDefault: boolean;
+    properties: string[];
+    /** Keys of content types and property groups (tabs) its properties point to. */
+    references: string[];
+  };
   content?: {
     contentType: string;
     baseType?: string;
@@ -53,4 +64,15 @@ export interface Inventory {
   items: PlanItem[];
   /** Notes about the enumeration itself, e.g. items found only via the versions cross-check. */
   notes: string[];
+  /**
+   * Items listed in the version history that the API can't load. In practice these are "For this page/block"
+   * asset folders whose owning content was deleted; their contents are walked and included in `items`.
+   */
+  unresolved: UnresolvedItem[];
+}
+
+export interface UnresolvedItem {
+  key: string;
+  name?: string;
+  contentType?: string;
 }

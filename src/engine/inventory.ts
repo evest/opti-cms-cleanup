@@ -1,7 +1,7 @@
 import type { CmsClient } from '../api/client.js';
 import type { Category, Inventory, PlanItem } from '../model.js';
 import { enumerateContent } from '../resources/content.js';
-import { classifyBySource, classifyContentSource, classifyLocale } from '../rules.js';
+import { classifyBySource, classifyContentSource, classifyLocale, DEFAULT_CONTENT_TYPES } from '../rules.js';
 
 interface Resource {
   key: string;
@@ -10,6 +10,7 @@ interface Resource {
   type?: string | null;
   isEnabled?: boolean | null;
   baseType?: string;
+  properties?: Record<string, unknown>;
 }
 
 /** Builds the full, read-only picture of what a purge would do. */
@@ -46,7 +47,13 @@ export async function buildInventory(client: CmsClient): Promise<Inventory> {
     ...displayTemplates.map((r) => item('displaytemplates', r, { action: 'delete' })),
     ...bindings.map((r) => item('contenttypebindings', r, { action: 'delete' })),
     ...sources.map((r) => item('contentsources', r, classifyContentSource(r))),
-    ...contentTypes.map((r) => item('contenttypes', r, classifyBySource(r))),
+    ...contentTypes.map((r) => {
+      const isDefault = !r.source && DEFAULT_CONTENT_TYPES.includes(r.key);
+      return {
+        ...item('contenttypes', r, isDefault ? { action: 'delete', reason: 'default type (new instances have it)' } : classifyBySource(r)),
+        type: { isDefault, properties: Object.keys(r.properties ?? {}), references: referencesOf(r.properties) },
+      };
+    }),
     ...propertyGroups.map((r) => item('propertygroups', r, classifyBySource(r))),
     ...applications.map((r) => item('applications', r, classifyBySource(r))),
     ...locales.map((r) => item('locales', r, classifyLocale(r))),
@@ -71,5 +78,27 @@ export async function buildInventory(client: CmsClient): Promise<Inventory> {
     generatedAt: new Date().toISOString(),
     items,
     notes: content.notes,
+    unresolved: content.unresolved,
   };
+}
+
+/** Fields in a property definition that name another content type or a property group (tab). */
+const REFERENCE_FIELDS = new Set(['contentType', 'allowedTypes', 'restrictedTypes', 'group']);
+
+/** Type and tab keys a type's properties point to, including inside list items (`items`). */
+export function referencesOf(properties: Record<string, unknown> | undefined): string[] {
+  const found = new Set<string>();
+  const collect = (value: unknown) => {
+    if (typeof value === 'string') found.add(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+  };
+  const visit = (definition: unknown) => {
+    if (!definition || typeof definition !== 'object') return;
+    for (const [field, value] of Object.entries(definition)) {
+      if (REFERENCE_FIELDS.has(field)) collect(value);
+      else if (field === 'items') visit(value);
+    }
+  };
+  Object.values(properties ?? {}).forEach(visit);
+  return [...found];
 }

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the cleanup CLI without going through npm, so all arguments reach the tool.
+exec node "$(dirname "$0")/bin/cleanup.mjs" "$@"
